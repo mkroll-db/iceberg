@@ -1,9 +1,11 @@
 # Interactive sequence demo
 
 Run this from the `iceberg/` directory. The demo starts a temporary REST catalog,
-creates `demo.identity.items` with a required `BIGINT` identity column, and opens a
-Spark SQL prompt. The server binds to loopback on a free port. Its catalog and counters
-are discarded when the process exits.
+creates `demo.identity.items` with required `BIGINT` identity and epoch-nanosecond
+columns and a required Iceberg UUID column, then opens a Spark SQL prompt. The columns use
+`next_value_for`, `current_time_ns()`, and `uuid()` write defaults, respectively.
+`current_time_ns()` stores Unix epoch nanoseconds in a `BIGINT`. The server binds to
+loopback on a free port. Its catalog and counters are discarded when the process exits.
 
 ```bash
 ./gradlew :iceberg-spark:iceberg-spark-4.2_2.13:sequenceDemo --quiet --console=plain
@@ -29,8 +31,10 @@ statement. Results show at most 20 rows. `:cancel` clears a pending statement an
 ```sql
 INSERT INTO demo.identity.items (data) VALUES ('first'), ('second');
 SELECT id, data FROM demo.identity.items ORDER BY id;
+SELECT id, record_uuid, created_at_ns FROM demo.identity.items ORDER BY id;
 SELECT count(*), count(DISTINCT id), count(*) - count(id)
 FROM demo.identity.items;
+SELECT count(*), count(DISTINCT record_uuid) FROM demo.identity.items;
 ```
 
 Type `:concurrent` to submit four inserts of 100 rows each, then print the total,
@@ -44,9 +48,10 @@ To see the explicit-value guard, run:
 INSERT INTO demo.identity.items (id, data) VALUES (5, 'explicit');
 ```
 
-That command should fail without ending the prompt. The expression default is created
-through the Iceberg Java catalog API, because this prototype does not add SQL DDL
-syntax for it. MERGE and durable counters are outside the prototype guarantee. See
+That command should fail without ending the prompt. Explicit UUID and nanosecond values
+are accepted when supplied. The expression defaults are created through the Iceberg
+Java catalog API, because this prototype does not add SQL DDL syntax for them. MERGE
+and durable counters are outside the prototype guarantee. See
 [`PROTOTYPE_SPIKE_RESULTS.md`](PROTOTYPE_SPIKE_RESULTS.md) for the tested behavior and
 limits. Spark SQL syntax is documented in the
 [Spark SQL reference](https://spark.apache.org/docs/latest/sql-ref.html).

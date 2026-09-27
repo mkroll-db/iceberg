@@ -197,7 +197,7 @@ class SparkWriteBuilder implements WriteBuilder, SupportsDynamicOverwrite, Suppo
   private Schema validateWriteSchema() {
     Schema writeSchema = SparkSchemaUtil.convert(table.schema(), info.schema(), caseSensitive);
     TypeUtil.validateWriteSchema(
-        SequenceColumns.validationSchema(table.schema()),
+        PerRecordDefaultColumns.validationSchema(table.schema()),
         writeSchema,
         checkNullability,
         checkOrdering);
@@ -217,7 +217,7 @@ class SparkWriteBuilder implements WriteBuilder, SupportsDynamicOverwrite, Suppo
     Schema mergedSchema = update.apply();
     Schema writeSchema = SparkSchemaUtil.convert(mergedSchema, info.schema(), caseSensitive);
     TypeUtil.validateWriteSchema(
-        SequenceColumns.validationSchema(mergedSchema),
+        PerRecordDefaultColumns.validationSchema(mergedSchema),
         writeSchema,
         checkNullability,
         checkOrdering);

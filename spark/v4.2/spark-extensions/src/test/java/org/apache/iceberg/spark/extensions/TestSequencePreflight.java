@@ -154,11 +154,11 @@ public class TestSequencePreflight {
                     .sql(
                         "ALTER TABLE preflight.probe.restrictions ADD PARTITION FIELD bucket(16, id)")
                     .collect())
-        .hasMessageContaining("Sequence column cannot be partitioned");
+        .hasMessageContaining("Per-record default column cannot be partitioned");
     assertThatThrownBy(
             () ->
                 spark.sql("ALTER TABLE preflight.probe.restrictions WRITE ORDERED BY id").collect())
-        .hasMessageContaining("Sequence column cannot be sorted");
+        .hasMessageContaining("Per-record default column cannot be sorted");
     assertThat(catalog.loadTable(table).spec().isUnpartitioned()).isTrue();
     assertThat(catalog.loadTable(table).sortOrder().isUnsorted()).isTrue();
   }

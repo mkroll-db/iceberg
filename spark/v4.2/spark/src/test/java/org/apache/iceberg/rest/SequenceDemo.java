@@ -98,7 +98,19 @@ public final class SequenceDemo {
                     Expressions.apply(
                         Expressions.function("next_value_for"), List.<Object>of(sequenceId, 1, 1)))
                 .build(),
-            Types.NestedField.required(2, "data", Types.StringType.get()));
+            Types.NestedField.required(2, "data", Types.StringType.get()),
+            Types.NestedField.required("record_uuid")
+                .withId(3)
+                .ofType(Types.UUIDType.get())
+                .withWriteDefaultExpression(
+                    Expressions.apply(Expressions.function("uuid"), List.of()))
+                .build(),
+            Types.NestedField.required("created_at_ns")
+                .withId(4)
+                .ofType(Types.LongType.get())
+                .withWriteDefaultExpression(
+                    Expressions.apply(Expressions.function("current_time_ns"), List.of()))
+                .build());
     catalog.createTable(TableIdentifier.of(namespace, "items"), schema);
   }
 
@@ -232,6 +244,7 @@ public final class SequenceDemo {
     System.out.println("Try:");
     System.out.println("  INSERT INTO " + TABLE + " (data) VALUES ('first'), ('second');");
     System.out.println("  SELECT id, data FROM " + TABLE + " ORDER BY id;");
+    System.out.println("  SELECT id, record_uuid, created_at_ns FROM " + TABLE + " ORDER BY id;");
     System.out.println("  :concurrent    (four writers, 100 rows each)");
     System.out.println("  INSERT INTO " + TABLE + " (id, data) VALUES (5, 'explicit');");
   }

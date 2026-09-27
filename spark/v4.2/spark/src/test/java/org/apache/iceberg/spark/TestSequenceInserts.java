@@ -22,6 +22,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.net.InetAddress;
+import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -40,7 +42,9 @@ import org.apache.iceberg.expressions.Expressions;
 import org.apache.iceberg.rest.RESTCatalog;
 import org.apache.iceberg.rest.RESTCatalogServer;
 import org.apache.iceberg.rest.RESTServerExtension;
+import org.apache.iceberg.types.Type;
 import org.apache.iceberg.types.Types;
+import org.apache.iceberg.util.DateTimeUtil;
 import org.apache.spark.sql.Row;
 import org.apache.spark.sql.SparkSession;
 import org.junit.jupiter.api.AfterAll;
@@ -68,6 +72,7 @@ public class TestSequenceInserts {
             .config("spark.driver.host", InetAddress.getLoopbackAddress().getHostAddress())
             .config("spark.ui.enabled", "false")
             .config("spark.task.maxFailures", "1")
+            .config("spark.executor.extraClassPath", System.getProperty("java.class.path"))
             .config("spark.plugins", SequenceSparkPlugin.class.getName())
             .config("spark.sql.catalog.testrest", SparkCatalog.class.getName())
             .config("spark.sql.catalog.testrest.type", "rest")
@@ -182,13 +187,101 @@ public class TestSequenceInserts {
                             + namespace
                             + ".partitioned (data) VALUES ('partitioned')")
                     .collect())
-        .hasMessageContaining("Sequence column cannot be partitioned");
+        .hasMessageContaining("Per-record default column cannot be partitioned");
     assertThatThrownBy(
             () ->
                 spark
                     .sql("INSERT INTO testrest." + namespace + ".sorted (data) VALUES ('sorted')")
                     .collect())
-        .hasMessageContaining("Sequence column cannot be sorted");
+        .hasMessageContaining("Per-record default column cannot be sorted");
+  }
+
+  @Test
+  public void omittedUuidAndCurrentTimeNsAreGeneratedPerRow() {
+    String sqlTable = createDefaultTable(defaultsSchema());
+    long before = DateTimeUtil.nanosFromTimestamptz(OffsetDateTime.now(ZoneOffset.UTC));
+    spark
+        .sql("INSERT INTO " + sqlTable + " (data) SELECT cast(id as string) FROM range(20)")
+        .collect();
+    long after = DateTimeUtil.nanosFromTimestamptz(OffsetDateTime.now(ZoneOffset.UTC));
+
+    List<Row> rows =
+        spark.sql("SELECT record_uuid, created_at_ns FROM " + sqlTable).collectAsList();
+    assertThat(rows).hasSize(20);
+    assertThat(rows.stream().map(row -> UUID.fromString(row.getString(0)))).doesNotHaveDuplicates();
+    assertThat(rows).allSatisfy(row -> assertThat(row.getLong(1)).isBetween(before, after));
+  }
+
+  @Test
+  public void explicitUuidAndCurrentTimeNsArePreserved() {
+    String sqlTable = createDefaultTable(defaultsSchema());
+    UUID expectedUuid = UUID.randomUUID();
+    long expectedTime = DateTimeUtil.nanosFromTimestamptz(OffsetDateTime.now(ZoneOffset.UTC));
+    spark
+        .sql(
+            "INSERT INTO "
+                + sqlTable
+                + " (record_uuid, created_at_ns, data) VALUES ('"
+                + expectedUuid
+                + "', "
+                + expectedTime
+                + ", 'explicit')")
+        .collect();
+
+    Row row = spark.sql("SELECT record_uuid, created_at_ns FROM " + sqlTable).head();
+    assertThat(row.getString(0)).isEqualTo(expectedUuid.toString());
+    assertThat(row.getLong(1)).isEqualTo(expectedTime);
+  }
+
+  @Test
+  public void uuidAndCurrentTimeNsValidateTypesAndArguments() {
+    assertInvalidDefault("uuid", Types.StringType.get(), List.of(), "uuid column");
+    assertInvalidDefault("uuid", Types.UUIDType.get(), List.of(1), "uuid arguments");
+    assertInvalidDefault("current_time_ns", Types.StringType.get(), List.of(), "long column");
+    assertInvalidDefault(
+        "current_time_ns", Types.LongType.get(), List.of(1), "current_time_ns arguments");
+  }
+
+  private static void assertInvalidDefault(
+      String function, Type type, List<Object> arguments, String message) {
+    Schema schema =
+        new Schema(
+            Types.NestedField.required("value")
+                .withId(1)
+                .ofType(type)
+                .withWriteDefaultExpression(
+                    Expressions.apply(Expressions.function(function), arguments))
+                .build(),
+            Types.NestedField.required(2, "data", Types.StringType.get()));
+    String sqlTable = createDefaultTable(schema);
+    assertThatThrownBy(
+            () -> spark.sql("INSERT INTO " + sqlTable + " (data) VALUES ('value')").collect())
+        .hasMessageContaining(message);
+  }
+
+  private static String createDefaultTable(Schema schema) {
+    RESTCatalog catalog = SERVER.client();
+    Namespace namespace =
+        Namespace.of("defaults_" + UUID.randomUUID().toString().replace('-', '_'));
+    catalog.createNamespace(namespace);
+    catalog.createTable(TableIdentifier.of(namespace, "items"), schema);
+    return "testrest." + namespace + ".items";
+  }
+
+  private static Schema defaultsSchema() {
+    return new Schema(
+        Types.NestedField.required("record_uuid")
+            .withId(1)
+            .ofType(Types.UUIDType.get())
+            .withWriteDefaultExpression(Expressions.apply(Expressions.function("uuid"), List.of()))
+            .build(),
+        Types.NestedField.required("created_at_ns")
+            .withId(2)
+            .ofType(Types.LongType.get())
+            .withWriteDefaultExpression(
+                Expressions.apply(Expressions.function("current_time_ns"), List.of()))
+            .build(),
+        Types.NestedField.required(3, "data", Types.StringType.get()));
   }
 
   private static String createIdentityTable() {

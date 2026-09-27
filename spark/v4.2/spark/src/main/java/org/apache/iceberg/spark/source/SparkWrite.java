@@ -22,10 +22,13 @@ import static org.apache.iceberg.IsolationLevel.SERIALIZABLE;
 import static org.apache.iceberg.IsolationLevel.SNAPSHOT;
 
 import java.io.IOException;
+import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.UUID;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 import org.apache.iceberg.AppendFiles;
@@ -66,6 +69,7 @@ import org.apache.iceberg.spark.SparkWriteRequirements;
 import org.apache.iceberg.spark.SparkWriteUtil;
 import org.apache.iceberg.util.ContentFileUtil;
 import org.apache.iceberg.util.DataFileSet;
+import org.apache.iceberg.util.DateTimeUtil;
 import org.apache.iceberg.util.DeleteFileSet;
 import org.apache.spark.TaskContext;
 import org.apache.spark.TaskContext$;
@@ -74,6 +78,7 @@ import org.apache.spark.broadcast.Broadcast;
 import org.apache.spark.executor.OutputMetrics;
 import org.apache.spark.sql.SparkSession;
 import org.apache.spark.sql.catalyst.InternalRow;
+import org.apache.spark.sql.catalyst.expressions.GenericInternalRow;
 import org.apache.spark.sql.catalyst.expressions.JoinedRow;
 import org.apache.spark.sql.connector.distributions.Distribution;
 import org.apache.spark.sql.connector.expressions.SortOrder;
@@ -95,6 +100,7 @@ import org.apache.spark.sql.connector.write.WriterCommitMessage;
 import org.apache.spark.sql.connector.write.streaming.StreamingDataWriterFactory;
 import org.apache.spark.sql.connector.write.streaming.StreamingWrite;
 import org.apache.spark.sql.types.StructType;
+import org.apache.spark.unsafe.types.UTF8String;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -237,7 +243,7 @@ abstract class SparkWrite extends BaseSparkWrite implements Write, RequiresDistr
         useFanoutWriter,
         writeProperties,
         sortOrderId,
-        SequenceColumns.specs(table, dsSchema),
+        PerRecordDefaultColumns.specs(table, dsSchema),
         allowExistingIdentityValues);
   }
 
@@ -735,7 +741,7 @@ abstract class SparkWrite extends BaseSparkWrite implements Write, RequiresDistr
     private final String queryId;
     private final Map<String, String> writeProperties;
     private final int sortOrderId;
-    private final List<SequenceColumns.Spec> sequenceSpecs;
+    private final List<PerRecordDefaultColumns.Spec> defaultSpecs;
     private final boolean allowExistingIdentityValues;
 
     protected WriterFactory(
@@ -749,7 +755,7 @@ abstract class SparkWrite extends BaseSparkWrite implements Write, RequiresDistr
         boolean useFanoutWriter,
         Map<String, String> writeProperties,
         int sortOrderId,
-        List<SequenceColumns.Spec> sequenceSpecs,
+        List<PerRecordDefaultColumns.Spec> defaultSpecs,
         boolean allowExistingIdentityValues) {
       this.tableBroadcast = tableBroadcast;
       this.format = format;
@@ -761,7 +767,7 @@ abstract class SparkWrite extends BaseSparkWrite implements Write, RequiresDistr
       this.queryId = queryId;
       this.writeProperties = writeProperties;
       this.sortOrderId = sortOrderId;
-      this.sequenceSpecs = sequenceSpecs;
+      this.defaultSpecs = defaultSpecs;
       this.allowExistingIdentityValues = allowExistingIdentityValues;
     }
 
@@ -810,55 +816,76 @@ abstract class SparkWrite extends BaseSparkWrite implements Write, RequiresDistr
                 useFanoutWriter,
                 rowLineageExtractor);
       }
-      // ponytail: fill before PartitionedDataWriter computes the partition key. Spark's
-      // distribution and ordering still see NULL, so sequence columns cannot be partitioned
-      // or sorted until the fill moves into the query plan.
-      return sequenceSpecs.isEmpty()
+      // Fill before PartitionedDataWriter computes the partition key. Spark's distribution and
+      // ordering still see NULL, so defaulted columns cannot be partitioned or sorted.
+      return defaultSpecs.isEmpty()
           ? writer
-          : new SequenceDataWriter(writer, sequenceSpecs, allowExistingIdentityValues);
+          : new DefaultDataWriter(writer, dsSchema, defaultSpecs, allowExistingIdentityValues);
     }
   }
 
-  private static class SequenceDataWriter implements DataWriter<InternalRow> {
+  private static class DefaultDataWriter implements DataWriter<InternalRow> {
     private final DataWriter<InternalRow> delegate;
-    private final List<SequenceColumns.Spec> specs;
+    private final StructType rowType;
+    private final List<PerRecordDefaultColumns.Spec> specs;
     private final List<RangeBuffer> buffers;
     private final boolean allowExistingValues;
+    private final boolean needsGenericRow;
 
-    private SequenceDataWriter(
+    private DefaultDataWriter(
         DataWriter<InternalRow> delegate,
-        List<SequenceColumns.Spec> specs,
+        StructType rowType,
+        List<PerRecordDefaultColumns.Spec> specs,
         boolean allowExistingValues) {
       this.delegate = delegate;
+      this.rowType = rowType;
       this.specs = specs;
       this.allowExistingValues = allowExistingValues;
+      this.needsGenericRow =
+          specs.stream().anyMatch(spec -> spec.kind == PerRecordDefaultColumns.Spec.Kind.UUID);
       this.buffers = Lists.newArrayListWithExpectedSize(specs.size());
-      for (SequenceColumns.Spec spec : specs) {
-        buffers.add(
-            new RangeBuffer(
-                spec.sequenceId,
-                spec.step,
-                count ->
-                    SequenceSparkPlugin.reserve(
-                        spec.catalogName,
-                        spec.tableName,
-                        spec.sequenceId,
-                        spec.start,
-                        spec.step,
-                        count)));
+      for (PerRecordDefaultColumns.Spec spec : specs) {
+        if (spec.kind == PerRecordDefaultColumns.Spec.Kind.SEQUENCE) {
+          buffers.add(
+              new RangeBuffer(
+                  spec.sequenceId,
+                  spec.step,
+                  count ->
+                      SequenceSparkPlugin.reserve(
+                          spec.catalogName,
+                          spec.tableName,
+                          spec.sequenceId,
+                          spec.start,
+                          spec.step,
+                          count)));
+        } else {
+          buffers.add(null);
+        }
       }
     }
 
     private InternalRow fill(InternalRow row) {
       InternalRow filled = row;
       for (int index = 0; index < specs.size(); index++) {
-        SequenceColumns.Spec spec = specs.get(index);
+        PerRecordDefaultColumns.Spec spec = specs.get(index);
         if (row.isNullAt(spec.ordinal)) {
           if (filled == row) {
-            filled = row.copy();
+            filled = needsGenericRow ? copyAsGenericRow(row) : row.copy();
           }
-          filled.setLong(spec.ordinal, buffers.get(index).next());
-        } else {
+          switch (spec.kind) {
+            case SEQUENCE:
+              filled.setLong(spec.ordinal, buffers.get(index).next());
+              break;
+            case UUID:
+              filled.update(spec.ordinal, UTF8String.fromString(UUID.randomUUID().toString()));
+              break;
+            case CURRENT_TIME_NS:
+              filled.setLong(
+                  spec.ordinal,
+                  DateTimeUtil.nanosFromTimestamptz(OffsetDateTime.now(ZoneOffset.UTC)));
+              break;
+          }
+        } else if (spec.kind == PerRecordDefaultColumns.Spec.Kind.SEQUENCE) {
           Preconditions.checkArgument(
               allowExistingValues,
               "Explicit values are not allowed for sequence column at ordinal %s",
@@ -866,6 +893,17 @@ abstract class SparkWrite extends BaseSparkWrite implements Write, RequiresDistr
         }
       }
       return filled;
+    }
+
+    private InternalRow copyAsGenericRow(InternalRow row) {
+      InternalRow copy = row.copy();
+      GenericInternalRow generic = new GenericInternalRow(copy.numFields());
+      for (int ordinal = 0; ordinal < copy.numFields(); ordinal++) {
+        if (!copy.isNullAt(ordinal)) {
+          generic.update(ordinal, copy.get(ordinal, rowType.fields()[ordinal].dataType()));
+        }
+      }
+      return generic;
     }
 
     @Override

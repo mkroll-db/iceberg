@@ -35,16 +35,16 @@ import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.types.Types;
 import org.apache.spark.sql.types.StructType;
 
-public final class SequenceColumns {
-  private SequenceColumns() {}
+public final class PerRecordDefaultColumns {
+  private PerRecordDefaultColumns() {}
 
-  public static void validateNoSequenceField(Schema schema, Term term, String operation) {
+  public static void validateNoDefaultField(Schema schema, Term term, String operation) {
     Preconditions.checkArgument(term instanceof UnboundTerm, "Unsupported write term: %s", term);
     String name = ((UnboundTerm<?>) term).ref().name();
     Types.NestedField field = schema.findField(name);
     Preconditions.checkArgument(
         field == null || field.writeDefaultExpression() == null,
-        "Sequence column cannot be %s: %s",
+        "Per-record default column cannot be %s: %s",
         operation,
         name);
   }
@@ -70,16 +70,8 @@ public final class SequenceColumns {
       }
 
       Preconditions.checkArgument(
-          separator > 0, "Per-record default requires a named REST catalog table: %s", fullName);
-      Preconditions.checkArgument(
-          field.type().equals(Types.LongType.get()),
-          "Sequence column must be a long: %s",
-          field.name());
-      Preconditions.checkArgument(
-          "next_value_for".equals(expression.function().name())
-              && (expression.function().catalog() == null
-                  || "iceberg_functions".equals(expression.function().catalog()))
-              && expression.arguments().size() == 3,
+          expression.function().catalog() == null
+              || "iceberg_functions".equals(expression.function().catalog()),
           "Unsupported per-record default for %s: %s",
           field.name(),
           expression);
@@ -87,7 +79,7 @@ public final class SequenceColumns {
         for (PartitionField partitionField : partitionSpec.fields()) {
           Preconditions.checkArgument(
               partitionField.sourceId() != field.fieldId(),
-              "Sequence column cannot be partitioned: %s",
+              "Per-record default column cannot be partitioned: %s",
               field.name());
         }
       }
@@ -95,31 +87,76 @@ public final class SequenceColumns {
         for (SortField sortField : sortOrder.fields()) {
           Preconditions.checkArgument(
               sortField.sourceId() != field.fieldId(),
-              "Sequence column cannot be sorted: %s",
+              "Per-record default column cannot be sorted: %s",
               field.name());
         }
       }
-      Object sequenceId = argument(expression, 0);
-      Object start = argument(expression, 1);
-      Object step = argument(expression, 2);
-      Preconditions.checkArgument(
-          sequenceId instanceof String
-              && (start instanceof Integer || start instanceof Long)
-              && (step instanceof Integer || step instanceof Long),
-          "Invalid next_value_for arguments for %s: %s",
-          field.name(),
-          expression);
-      long stepValue = ((Number) step).longValue();
-      Preconditions.checkArgument(
-          stepValue != 0, "Sequence step must not be zero: %s", field.name());
-      specs.add(
-          new Spec(
-              fullName.substring(0, separator),
-              fullName.substring(separator + 1),
-              (String) sequenceId,
-              ((Number) start).longValue(),
-              stepValue,
-              writeType.fieldIndex(field.name())));
+      switch (expression.function().name()) {
+        case "next_value_for":
+          Preconditions.checkArgument(
+              separator > 0, "Sequence default requires a named REST catalog table: %s", fullName);
+          Preconditions.checkArgument(
+              field.type().equals(Types.LongType.get()),
+              "Sequence column must be a long: %s",
+              field.name());
+          Preconditions.checkArgument(
+              expression.arguments().size() == 3,
+              "Invalid next_value_for arguments for %s: %s",
+              field.name(),
+              expression);
+          Object sequenceId = argument(expression, 0);
+          Object start = argument(expression, 1);
+          Object step = argument(expression, 2);
+          Preconditions.checkArgument(
+              sequenceId instanceof String
+                  && (start instanceof Integer || start instanceof Long)
+                  && (step instanceof Integer || step instanceof Long),
+              "Invalid next_value_for arguments for %s: %s",
+              field.name(),
+              expression);
+          long stepValue = ((Number) step).longValue();
+          Preconditions.checkArgument(
+              stepValue != 0, "Sequence step must not be zero: %s", field.name());
+          specs.add(
+              Spec.sequence(
+                  fullName.substring(0, separator),
+                  fullName.substring(separator + 1),
+                  (String) sequenceId,
+                  ((Number) start).longValue(),
+                  stepValue,
+                  writeType.fieldIndex(field.name())));
+          break;
+
+        case "uuid":
+          Preconditions.checkArgument(
+              field.type().equals(Types.UUIDType.get()),
+              "UUID default requires a uuid column: %s",
+              field.name());
+          Preconditions.checkArgument(
+              expression.arguments().isEmpty(),
+              "Invalid uuid arguments for %s: %s",
+              field.name(),
+              expression);
+          specs.add(Spec.uuid(writeType.fieldIndex(field.name())));
+          break;
+
+        case "current_time_ns":
+          Preconditions.checkArgument(
+              field.type().equals(Types.LongType.get()),
+              "current_time_ns default requires a long column: %s",
+              field.name());
+          Preconditions.checkArgument(
+              expression.arguments().isEmpty(),
+              "Invalid current_time_ns arguments for %s: %s",
+              field.name(),
+              expression);
+          specs.add(Spec.currentTimeNs(writeType.fieldIndex(field.name())));
+          break;
+
+        default:
+          throw new IllegalArgumentException(
+              "Unsupported per-record default for " + field.name() + ": " + expression);
+      }
     }
     return specs;
   }
@@ -132,6 +169,13 @@ public final class SequenceColumns {
   }
 
   static class Spec implements Serializable {
+    enum Kind {
+      SEQUENCE,
+      UUID,
+      CURRENT_TIME_NS
+    }
+
+    final Kind kind;
     final String catalogName;
     final String tableName;
     final String sequenceId;
@@ -140,18 +184,38 @@ public final class SequenceColumns {
     final int ordinal;
 
     private Spec(
+        Kind kind,
         String catalogName,
         String tableName,
         String sequenceId,
         long start,
         long step,
         int ordinal) {
+      this.kind = kind;
       this.catalogName = catalogName;
       this.tableName = tableName;
       this.sequenceId = sequenceId;
       this.start = start;
       this.step = step;
       this.ordinal = ordinal;
+    }
+
+    private static Spec sequence(
+        String catalogName,
+        String tableName,
+        String sequenceId,
+        long start,
+        long step,
+        int ordinal) {
+      return new Spec(Kind.SEQUENCE, catalogName, tableName, sequenceId, start, step, ordinal);
+    }
+
+    private static Spec uuid(int ordinal) {
+      return new Spec(Kind.UUID, null, null, null, 0, 0, ordinal);
+    }
+
+    private static Spec currentTimeNs(int ordinal) {
+      return new Spec(Kind.CURRENT_TIME_NS, null, null, null, 0, 0, ordinal);
     }
   }
 }
