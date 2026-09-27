@@ -132,6 +132,15 @@ project(":iceberg-spark:iceberg-spark-${sparkMajorVersion}_${scalaVersion}") {
     jvmArgs += project.property('extraJvmArgs')
     systemProperty 'org.slf4j.simpleLogger.defaultLogLevel', 'off'
     systemProperty 'slf4j.provider', 'org.slf4j.simple.SimpleServiceProvider'
+    doFirst {
+      if (args.contains('--cluster')) {
+        String sparkHome = System.getenv('SPARK_HOME')
+        if (sparkHome == null || !file("${sparkHome}/jars").isDirectory()) {
+          throw new GradleException(
+              "--cluster requires SPARK_HOME to point to a Spark 4.2 directory containing jars/; found: ${sparkHome}")
+        }
+      }
+    }
   }
 }
 

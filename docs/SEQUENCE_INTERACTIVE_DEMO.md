@@ -12,17 +12,17 @@ loopback on a free port. Its catalog and counters are discarded when the process
 ```
 
 The default uses Spark `local[2]`. To exercise the executor-to-driver plugin hop with
-two separate executor JVMs, set `SPARK_HOME` to a Spark 4.2 distribution and run:
+two separate executor JVMs, use the temporary Spark home available in this workspace:
 
 ```bash
-SPARK_HOME=/path/to/spark-4.2.0 SPARK_SCALA_VERSION=2.13 \
+SPARK_HOME=/tmp/spark-prototype-home SPARK_SCALA_VERSION=2.13 \
   ./gradlew :iceberg-spark:iceberg-spark-4.2_2.13:sequenceDemo \
   --args='--cluster' --quiet --console=plain
 ```
 
-The current workspace also has a temporary Spark home at `/tmp/spark-prototype-home`.
-It was assembled from the Gradle test classpath, so it is useful for this checkout
-but is not part of the repository.
+The temporary Spark home was assembled from the Gradle test classpath and is not part
+of the repository. If it is absent, replace `SPARK_HOME` with the path to an installed
+Spark 4.2 distribution containing a `jars/` directory.
 
 At the `sql>` prompt, end SQL with `;`. A blank line also runs a pending multiline
 statement. Results show at most 20 rows. `:cancel` clears a pending statement and
