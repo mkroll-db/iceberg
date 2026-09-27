@@ -20,6 +20,7 @@ package org.apache.iceberg.expressions;
 
 import java.io.Serializable;
 import java.util.List;
+import java.util.Objects;
 import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 
@@ -64,5 +65,19 @@ public class FunctionReference implements Serializable {
       return catalog + "." + String.join(".", identifier);
     }
     return String.join(".", identifier);
+  }
+
+  @Override
+  public boolean equals(Object other) {
+    if (!(other instanceof FunctionReference)) {
+      return false;
+    }
+    FunctionReference that = (FunctionReference) other;
+    return Objects.equals(catalog, that.catalog) && identifier.equals(that.identifier);
+  }
+
+  @Override
+  public int hashCode() {
+    return Objects.hash(catalog, identifier);
   }
 }

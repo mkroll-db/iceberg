@@ -26,8 +26,11 @@ import java.io.IOException;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Set;
+import org.apache.iceberg.expressions.ExpressionParser;
 import org.apache.iceberg.expressions.Expressions;
 import org.apache.iceberg.expressions.Literal;
+import org.apache.iceberg.expressions.UnboundApply;
+import org.apache.iceberg.expressions.UnboundTerm;
 import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.types.Type;
@@ -101,6 +104,9 @@ public class SchemaParser {
       if (field.writeDefault() != null) {
         generator.writeFieldName(WRITE_DEFAULT);
         SingleValueParser.toJson(field.type(), field.writeDefault(), generator);
+      } else if (field.writeDefaultExpression() != null) {
+        generator.writeFieldName(WRITE_DEFAULT);
+        ExpressionParser.toJson(field.writeDefaultExpression(), generator);
       }
 
       generator.writeEndObject();
@@ -235,7 +241,31 @@ public class SchemaParser {
       Type type = typeFromJson(JsonUtil.get(TYPE, field));
 
       Literal<?> initialDefault = defaultFromJson(INITIAL_DEFAULT, type, field);
-      Literal<?> writeDefault = defaultFromJson(WRITE_DEFAULT, type, field);
+      JsonNode writeDefaultNode = field.get(WRITE_DEFAULT);
+      boolean isApply =
+          writeDefaultNode != null
+              && writeDefaultNode.isObject()
+              && "apply".equals(JsonUtil.getStringOrNull(TYPE, writeDefaultNode));
+      Literal<?> writeDefault = null;
+      UnboundApply<?> writeDefaultExpression = null;
+      if (isApply) {
+        UnboundTerm<?> expression = ExpressionParser.termFromJson(writeDefaultNode);
+        Preconditions.checkArgument(
+            expression instanceof UnboundApply,
+            "Invalid write default expression for field %s: %s",
+            name,
+            writeDefaultNode);
+        writeDefaultExpression = (UnboundApply<?>) expression;
+      } else if (writeDefaultNode != null && writeDefaultNode.isObject()) {
+        try {
+          writeDefault = defaultFromJson(WRITE_DEFAULT, type, field);
+        } catch (RuntimeException e) {
+          throw new IllegalArgumentException(
+              "Invalid write default for field " + name + ": " + writeDefaultNode, e);
+        }
+      } else {
+        writeDefault = defaultFromJson(WRITE_DEFAULT, type, field);
+      }
 
       String doc = JsonUtil.getStringOrNull(DOC, field);
       boolean isRequired = JsonUtil.getBool(REQUIRED, field);
@@ -246,6 +276,7 @@ public class SchemaParser {
               .withDoc(doc)
               .withInitialDefault(initialDefault)
               .withWriteDefault(writeDefault)
+              .withWriteDefaultExpression(writeDefaultExpression)
               .build());
     }
 

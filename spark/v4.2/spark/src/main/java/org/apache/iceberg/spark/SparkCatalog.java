@@ -55,6 +55,7 @@ import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 import org.apache.iceberg.relocated.com.google.common.collect.Sets;
 import org.apache.iceberg.rest.RESTCatalog;
+import org.apache.iceberg.rest.responses.ReserveRangeResponse;
 import org.apache.iceberg.spark.actions.SparkActions;
 import org.apache.iceberg.spark.source.SparkChangelogTable;
 import org.apache.iceberg.spark.source.SparkTable;
@@ -175,6 +176,15 @@ public class SparkCatalog extends BaseCatalog {
    */
   protected TableIdentifier buildIdentifier(Identifier identifier) {
     return Spark3Util.identifierToTableIdentifier(identifier);
+  }
+
+  public ReserveRangeResponse reserveSequence(
+      TableIdentifier table, String sequenceId, long start, long step, int count) {
+    Preconditions.checkState(
+        icebergCatalog instanceof RESTCatalog,
+        "Per-record defaults require an Iceberg REST catalog: %s",
+        catalogName);
+    return ((RESTCatalog) icebergCatalog).reserveSequence(table, sequenceId, start, step, count);
   }
 
   @Override

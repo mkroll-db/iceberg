@@ -23,6 +23,7 @@ import static org.apache.iceberg.IsolationLevel.SNAPSHOT;
 
 import java.io.IOException;
 import java.util.Arrays;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.function.Function;
@@ -56,8 +57,10 @@ import org.apache.iceberg.io.RollingDataWriter;
 import org.apache.iceberg.metrics.InMemoryMetricsReporter;
 import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
+import org.apache.iceberg.rest.RangeBuffer;
 import org.apache.iceberg.spark.CommitMetadata;
 import org.apache.iceberg.spark.FileRewriteCoordinator;
+import org.apache.iceberg.spark.SequenceSparkPlugin;
 import org.apache.iceberg.spark.SparkWriteConf;
 import org.apache.iceberg.spark.SparkWriteRequirements;
 import org.apache.iceberg.spark.SparkWriteUtil;
@@ -116,6 +119,7 @@ abstract class SparkWrite extends BaseSparkWrite implements Write, RequiresDistr
   private final boolean useMergeAppendForStreaming;
   private final SparkWriteRequirements writeRequirements;
   private final Map<String, String> writeProperties;
+  private final boolean allowExistingIdentityValues;
 
   private boolean cleanupOnAbort = false;
   private InMemoryMetricsReporter metricsReporter;
@@ -129,7 +133,8 @@ abstract class SparkWrite extends BaseSparkWrite implements Write, RequiresDistr
       String applicationId,
       Schema writeSchema,
       StructType dsSchema,
-      SparkWriteRequirements writeRequirements) {
+      SparkWriteRequirements writeRequirements,
+      boolean allowExistingIdentityValues) {
     this.sparkContext = JavaSparkContext.fromSparkContext(spark.sparkContext());
     this.table = table;
     this.writeConf = writeConf;
@@ -148,6 +153,7 @@ abstract class SparkWrite extends BaseSparkWrite implements Write, RequiresDistr
     this.writeRequirements = writeRequirements;
     this.outputSpecId = writeConf.outputSpecId();
     this.writeProperties = writeConf.writeProperties();
+    this.allowExistingIdentityValues = allowExistingIdentityValues;
 
     if (this.table instanceof BaseTable) {
       this.metricsReporter = new InMemoryMetricsReporter();
@@ -230,7 +236,9 @@ abstract class SparkWrite extends BaseSparkWrite implements Write, RequiresDistr
         dsSchema,
         useFanoutWriter,
         writeProperties,
-        sortOrderId);
+        sortOrderId,
+        SequenceColumns.specs(table, dsSchema),
+        allowExistingIdentityValues);
   }
 
   private void commitOperation(SnapshotUpdate<?> operation, String description) {
@@ -727,6 +735,8 @@ abstract class SparkWrite extends BaseSparkWrite implements Write, RequiresDistr
     private final String queryId;
     private final Map<String, String> writeProperties;
     private final int sortOrderId;
+    private final List<SequenceColumns.Spec> sequenceSpecs;
+    private final boolean allowExistingIdentityValues;
 
     protected WriterFactory(
         Broadcast<Table> tableBroadcast,
@@ -738,7 +748,9 @@ abstract class SparkWrite extends BaseSparkWrite implements Write, RequiresDistr
         StructType dsSchema,
         boolean useFanoutWriter,
         Map<String, String> writeProperties,
-        int sortOrderId) {
+        int sortOrderId,
+        List<SequenceColumns.Spec> sequenceSpecs,
+        boolean allowExistingIdentityValues) {
       this.tableBroadcast = tableBroadcast;
       this.format = format;
       this.outputSpecId = outputSpecId;
@@ -749,6 +761,8 @@ abstract class SparkWrite extends BaseSparkWrite implements Write, RequiresDistr
       this.queryId = queryId;
       this.writeProperties = writeProperties;
       this.sortOrderId = sortOrderId;
+      this.sequenceSpecs = sequenceSpecs;
+      this.allowExistingIdentityValues = allowExistingIdentityValues;
     }
 
     @Override
@@ -778,22 +792,110 @@ abstract class SparkWrite extends BaseSparkWrite implements Write, RequiresDistr
 
       Function<InternalRow, InternalRow> rowLineageExtractor = new ExtractRowLineage(writeSchema);
 
+      DataWriter<InternalRow> writer;
       if (spec.isUnpartitioned()) {
-        return new UnpartitionedDataWriter(
-            writerFactory, fileFactory, io, spec, targetFileSize, rowLineageExtractor);
-
+        writer =
+            new UnpartitionedDataWriter(
+                writerFactory, fileFactory, io, spec, targetFileSize, rowLineageExtractor);
       } else {
-        return new PartitionedDataWriter(
-            writerFactory,
-            fileFactory,
-            io,
-            spec,
-            writeSchema,
-            dsSchema,
-            targetFileSize,
-            useFanoutWriter,
-            rowLineageExtractor);
+        writer =
+            new PartitionedDataWriter(
+                writerFactory,
+                fileFactory,
+                io,
+                spec,
+                writeSchema,
+                dsSchema,
+                targetFileSize,
+                useFanoutWriter,
+                rowLineageExtractor);
       }
+      // ponytail: fill before PartitionedDataWriter computes the partition key. Spark's
+      // distribution and ordering still see NULL, so sequence columns cannot be partitioned
+      // or sorted until the fill moves into the query plan.
+      return sequenceSpecs.isEmpty()
+          ? writer
+          : new SequenceDataWriter(writer, sequenceSpecs, allowExistingIdentityValues);
+    }
+  }
+
+  private static class SequenceDataWriter implements DataWriter<InternalRow> {
+    private final DataWriter<InternalRow> delegate;
+    private final List<SequenceColumns.Spec> specs;
+    private final List<RangeBuffer> buffers;
+    private final boolean allowExistingValues;
+
+    private SequenceDataWriter(
+        DataWriter<InternalRow> delegate,
+        List<SequenceColumns.Spec> specs,
+        boolean allowExistingValues) {
+      this.delegate = delegate;
+      this.specs = specs;
+      this.allowExistingValues = allowExistingValues;
+      this.buffers = Lists.newArrayListWithExpectedSize(specs.size());
+      for (SequenceColumns.Spec spec : specs) {
+        buffers.add(
+            new RangeBuffer(
+                spec.sequenceId,
+                spec.step,
+                count ->
+                    SequenceSparkPlugin.reserve(
+                        spec.catalogName,
+                        spec.tableName,
+                        spec.sequenceId,
+                        spec.start,
+                        spec.step,
+                        count)));
+      }
+    }
+
+    private InternalRow fill(InternalRow row) {
+      InternalRow filled = row;
+      for (int index = 0; index < specs.size(); index++) {
+        SequenceColumns.Spec spec = specs.get(index);
+        if (row.isNullAt(spec.ordinal)) {
+          if (filled == row) {
+            filled = row.copy();
+          }
+          filled.setLong(spec.ordinal, buffers.get(index).next());
+        } else {
+          Preconditions.checkArgument(
+              allowExistingValues,
+              "Explicit values are not allowed for sequence column at ordinal %s",
+              spec.ordinal);
+        }
+      }
+      return filled;
+    }
+
+    @Override
+    public void write(InternalRow row) throws IOException {
+      delegate.write(fill(row));
+    }
+
+    @Override
+    public void write(InternalRow metadata, InternalRow row) throws IOException {
+      delegate.write(metadata, fill(row));
+    }
+
+    @Override
+    public WriterCommitMessage commit() throws IOException {
+      return delegate.commit();
+    }
+
+    @Override
+    public void abort() throws IOException {
+      delegate.abort();
+    }
+
+    @Override
+    public void close() throws IOException {
+      delegate.close();
+    }
+
+    @Override
+    public CustomTaskMetric[] currentMetricsValues() {
+      return delegate.currentMetricsValues();
     }
   }
 

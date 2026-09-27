@@ -99,6 +99,16 @@ public class ExpressionParser {
     ExpressionVisitors.visit(expression, new JsonGeneratorVisitor(gen));
   }
 
+  public static void toJson(UnboundTerm<?> term, JsonGenerator gen) throws IOException {
+    Preconditions.checkArgument(term != null, "Invalid term: null");
+    new JsonGeneratorVisitor(gen).writeValueExpr(term);
+  }
+
+  public static UnboundTerm<?> termFromJson(JsonNode node) {
+    Preconditions.checkArgument(node != null, "Cannot parse term from null");
+    return valueExprFromJson(node, null);
+  }
+
   private static class JsonGeneratorVisitor
       extends ExpressionVisitors.CustomOrderExpressionVisitor<Void> {
     private final JsonGenerator gen;

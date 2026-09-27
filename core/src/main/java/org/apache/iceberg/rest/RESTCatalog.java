@@ -42,6 +42,7 @@ import org.apache.iceberg.exceptions.NoSuchNamespaceException;
 import org.apache.iceberg.hadoop.Configurable;
 import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableList;
+import org.apache.iceberg.rest.responses.ReserveRangeResponse;
 import org.apache.iceberg.view.View;
 import org.apache.iceberg.view.ViewBuilder;
 
@@ -108,6 +109,11 @@ public class RESTCatalog
 
   public Map<String, String> properties() {
     return sessionCatalog.properties();
+  }
+
+  public ReserveRangeResponse reserveSequence(
+      TableIdentifier table, String sequenceId, long start, long step, int count) {
+    return sessionCatalog.reserveSequence(context, table, sequenceId, start, step, count);
   }
 
   @Override

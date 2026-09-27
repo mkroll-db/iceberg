@@ -33,6 +33,8 @@ public class ResourcePaths {
       "/v1/{prefix}/namespaces/{namespace}/properties";
   public static final String V1_TABLES = "/v1/{prefix}/namespaces/{namespace}/tables";
   public static final String V1_TABLE = "/v1/{prefix}/namespaces/{namespace}/tables/{table}";
+  public static final String V1_TABLE_SEQUENCE_RESERVE =
+      "/v1/{prefix}/namespaces/{namespace}/tables/{table}/sequences/{sequence-id}/reserve";
   public static final String V1_TABLE_CREDENTIALS =
       "/v1/{prefix}/namespaces/{namespace}/tables/{table}/credentials";
   public static final String V1_TABLE_REMOTE_SIGN =
@@ -102,6 +104,10 @@ public class ResourcePaths {
         pathEncode(ident.namespace()),
         "tables",
         RESTUtil.encodePathSegment(ident.name()));
+  }
+
+  public String reserveSequence(TableIdentifier ident, String sequenceId) {
+    return SLASH.join(table(ident), "sequences", RESTUtil.encodePathSegment(sequenceId), "reserve");
   }
 
   public String register(Namespace ns) {

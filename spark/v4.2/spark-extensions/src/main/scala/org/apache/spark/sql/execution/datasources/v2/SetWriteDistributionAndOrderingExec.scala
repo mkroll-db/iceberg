@@ -25,6 +25,7 @@ import org.apache.iceberg.TableProperties.WRITE_DISTRIBUTION_MODE
 import org.apache.iceberg.expressions.Term
 import org.apache.iceberg.spark.SparkUtil
 import org.apache.iceberg.spark.source.SparkTable
+import org.apache.iceberg.spark.source.SequenceColumns
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.Attribute
 import org.apache.spark.sql.connector.catalog.CatalogV2Implicits
@@ -45,6 +46,9 @@ case class SetWriteDistributionAndOrderingExec(
   override protected def run(): Seq[InternalRow] = {
     catalog.loadTable(ident) match {
       case iceberg: SparkTable =>
+        sortOrder.foreach { case (term, _, _) =>
+          SequenceColumns.validateNoSequenceField(iceberg.table.schema(), term, "sorted")
+        }
         val txn = iceberg.table.newTransaction()
 
         val orderBuilder = txn.replaceSortOrder().caseSensitive(SparkUtil.caseSensitive(session))

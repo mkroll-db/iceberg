@@ -70,7 +70,8 @@ class SparkRewriteWriteBuilder implements WriteBuilder {
         appId,
         writeSchema,
         info.schema(),
-        writeConf.writeRequirements()) {
+        writeConf.writeRequirements(),
+        true) {
 
       @Override
       public BatchWrite toBatch() {

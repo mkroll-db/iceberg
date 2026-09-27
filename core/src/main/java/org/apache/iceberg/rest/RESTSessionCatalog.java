@@ -100,6 +100,7 @@ import org.apache.iceberg.rest.responses.ListNamespacesResponse;
 import org.apache.iceberg.rest.responses.ListTablesResponse;
 import org.apache.iceberg.rest.responses.LoadTableResponse;
 import org.apache.iceberg.rest.responses.LoadViewResponse;
+import org.apache.iceberg.rest.responses.ReserveRangeResponse;
 import org.apache.iceberg.rest.responses.UpdateNamespacePropertiesResponse;
 import org.apache.iceberg.util.EnvironmentUtil;
 import org.apache.iceberg.util.PropertyUtil;
@@ -174,6 +175,20 @@ public class RESTSessionCatalog extends BaseViewSessionCatalog
   private ScanPlanningMode clientScanPlanningMode = null;
 
   private RESTTableCache tableCache;
+
+  public ReserveRangeResponse reserveSequence(
+      SessionContext context,
+      TableIdentifier table,
+      String sequenceId,
+      long start,
+      long step,
+      int count) {
+    Endpoint.check(endpoints, Endpoint.V1_RESERVE_SEQUENCE_RANGE);
+    checkIdentifierIsValid(table);
+    AuthSession session = authManager.contextualSession(context, catalogAuth);
+    return new RESTSequenceClient(client.withAuthSession(session), paths)
+        .reserve(table, sequenceId, start, step, count);
+  }
 
   public RESTSessionCatalog() {
     this(

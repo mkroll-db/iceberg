@@ -30,6 +30,7 @@ import java.util.regex.Pattern;
 import org.apache.iceberg.Schema;
 import org.apache.iceberg.expressions.Expressions;
 import org.apache.iceberg.expressions.Literal;
+import org.apache.iceberg.expressions.UnboundApply;
 import org.apache.iceberg.relocated.com.google.common.base.Joiner;
 import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableList;
@@ -712,19 +713,19 @@ public class Types {
 
   public static class NestedField implements Serializable {
     public static NestedField optional(int id, String name, Type type) {
-      return new NestedField(true, id, name, type, null, null, null);
+      return new NestedField(true, id, name, type, null, null, null, null);
     }
 
     public static NestedField optional(int id, String name, Type type, String doc) {
-      return new NestedField(true, id, name, type, doc, null, null);
+      return new NestedField(true, id, name, type, doc, null, null, null);
     }
 
     public static NestedField required(int id, String name, Type type) {
-      return new NestedField(false, id, name, type, null, null, null);
+      return new NestedField(false, id, name, type, null, null, null, null);
     }
 
     public static NestedField required(int id, String name, Type type, String doc) {
-      return new NestedField(false, id, name, type, doc, null, null);
+      return new NestedField(false, id, name, type, doc, null, null, null);
     }
 
     /**
@@ -734,7 +735,7 @@ public class Types {
      */
     @Deprecated
     public static NestedField of(int id, boolean isOptional, String name, Type type) {
-      return new NestedField(isOptional, id, name, type, null, null, null);
+      return new NestedField(isOptional, id, name, type, null, null, null, null);
     }
 
     /**
@@ -744,7 +745,7 @@ public class Types {
      */
     @Deprecated
     public static NestedField of(int id, boolean isOptional, String name, Type type, String doc) {
-      return new NestedField(isOptional, id, name, type, doc, null, null);
+      return new NestedField(isOptional, id, name, type, doc, null, null, null);
     }
 
     public static Builder from(NestedField field) {
@@ -771,6 +772,7 @@ public class Types {
       private String doc = null;
       private Literal<?> initialDefault = null;
       private Literal<?> writeDefault = null;
+      private UnboundApply<?> writeDefaultExpression = null;
 
       private Builder() {}
 
@@ -787,6 +789,7 @@ public class Types {
         this.doc = toCopy.doc;
         this.initialDefault = toCopy.initialDefault;
         this.writeDefault = toCopy.writeDefault;
+        this.writeDefaultExpression = toCopy.writeDefaultExpression;
       }
 
       public Builder asRequired() {
@@ -854,10 +857,16 @@ public class Types {
         return this;
       }
 
+      public Builder withWriteDefaultExpression(UnboundApply<?> expression) {
+        writeDefaultExpression = expression;
+        return this;
+      }
+
       public NestedField build() {
         Preconditions.checkNotNull(id, "Id cannot be null");
         // the constructor validates the other fields
-        return new NestedField(isOptional, id, name, type, doc, initialDefault, writeDefault);
+        return new NestedField(
+            isOptional, id, name, type, doc, initialDefault, writeDefault, writeDefaultExpression);
       }
     }
 
@@ -868,6 +877,8 @@ public class Types {
     private final String doc;
     private final Literal<?> initialDefault;
     private final Literal<?> writeDefault;
+    // ponytail: keep expressions separate from literal defaults until the format API is unified.
+    private final UnboundApply<?> writeDefaultExpression;
 
     private NestedField(
         boolean isOptional,
@@ -876,12 +887,17 @@ public class Types {
         Type type,
         String doc,
         Literal<?> initialDefault,
-        Literal<?> writeDefault) {
+        Literal<?> writeDefault,
+        UnboundApply<?> writeDefaultExpression) {
       Preconditions.checkNotNull(name, "Name cannot be null");
       Preconditions.checkNotNull(type, "Type cannot be null");
       Preconditions.checkArgument(
           isOptional || !type.equals(UnknownType.get()),
           "Cannot create required field with unknown type: %s",
+          name);
+      Preconditions.checkArgument(
+          writeDefault == null || writeDefaultExpression == null,
+          "Cannot set both write default and write default expression for field: %s",
           name);
       this.isOptional = isOptional;
       this.id = id;
@@ -890,6 +906,7 @@ public class Types {
       this.doc = doc;
       this.initialDefault = castDefault(initialDefault, type);
       this.writeDefault = castDefault(writeDefault, type);
+      this.writeDefaultExpression = writeDefaultExpression;
     }
 
     private static Literal<?> castDefault(Literal<?> defaultValue, Type type) {
@@ -914,7 +931,8 @@ public class Types {
       if (isOptional) {
         return this;
       }
-      return new NestedField(true, id, name, type, doc, initialDefault, writeDefault);
+      return new NestedField(
+          true, id, name, type, doc, initialDefault, writeDefault, writeDefaultExpression);
     }
 
     public boolean isRequired() {
@@ -925,7 +943,8 @@ public class Types {
       if (!isOptional) {
         return this;
       }
-      return new NestedField(false, id, name, type, doc, initialDefault, writeDefault);
+      return new NestedField(
+          false, id, name, type, doc, initialDefault, writeDefault, writeDefaultExpression);
     }
 
     /**
@@ -933,7 +952,8 @@ public class Types {
      */
     @Deprecated
     public NestedField withFieldId(int newId) {
-      return new NestedField(isOptional, newId, name, type, doc, initialDefault, writeDefault);
+      return new NestedField(
+          isOptional, newId, name, type, doc, initialDefault, writeDefault, writeDefaultExpression);
     }
 
     public int fieldId() {
@@ -968,11 +988,18 @@ public class Types {
       return writeDefault != null ? writeDefault.value() : null;
     }
 
+    public UnboundApply<?> writeDefaultExpression() {
+      return writeDefaultExpression;
+    }
+
     @Override
     public String toString() {
       return String.format(
               Locale.ROOT, "%d: %s: %s %s", id, name, isOptional ? "optional" : "required", type)
-          + (doc != null ? " (" + doc + ")" : "");
+          + (doc != null ? " (" + doc + ")" : "")
+          + (writeDefaultExpression != null
+              ? " (write-default: " + writeDefaultExpression + ")"
+              : "");
     }
 
     @Override
@@ -998,13 +1025,15 @@ public class Types {
         return false;
       } else if (!Objects.equals(writeDefault, that.writeDefault)) {
         return false;
+      } else if (!Objects.equals(writeDefaultExpression, that.writeDefaultExpression)) {
+        return false;
       }
       return true;
     }
 
     @Override
     public int hashCode() {
-      return Objects.hash(NestedField.class, id, isOptional, name, type);
+      return Objects.hash(NestedField.class, id, isOptional, name, type, writeDefaultExpression);
     }
   }
 

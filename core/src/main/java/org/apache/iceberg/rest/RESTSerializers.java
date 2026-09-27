@@ -67,6 +67,8 @@ import org.apache.iceberg.rest.requests.RemoteSignRequest;
 import org.apache.iceberg.rest.requests.RemoteSignRequestParser;
 import org.apache.iceberg.rest.requests.ReportMetricsRequest;
 import org.apache.iceberg.rest.requests.ReportMetricsRequestParser;
+import org.apache.iceberg.rest.requests.ReserveRangeRequest;
+import org.apache.iceberg.rest.requests.ReserveRangeRequestParser;
 import org.apache.iceberg.rest.requests.UpdateTableRequest;
 import org.apache.iceberg.rest.requests.UpdateTableRequestParser;
 import org.apache.iceberg.rest.responses.ConfigResponse;
@@ -91,6 +93,8 @@ import org.apache.iceberg.rest.responses.PlanTableScanResponse;
 import org.apache.iceberg.rest.responses.PlanTableScanResponseParser;
 import org.apache.iceberg.rest.responses.RemoteSignResponse;
 import org.apache.iceberg.rest.responses.RemoteSignResponseParser;
+import org.apache.iceberg.rest.responses.ReserveRangeResponse;
+import org.apache.iceberg.rest.responses.ReserveRangeResponseParser;
 import org.apache.iceberg.util.JsonUtil;
 
 public class RESTSerializers {
@@ -157,6 +161,10 @@ public class RESTSerializers {
         .addDeserializer(PlanTableScanRequest.class, new PlanTableScanRequestDeserializer<>())
         .addSerializer(FetchScanTasksRequest.class, new FetchScanTasksRequestSerializer<>())
         .addDeserializer(FetchScanTasksRequest.class, new FetchScanTasksRequestDeserializer<>())
+        .addSerializer(ReserveRangeRequest.class, new ReserveRangeRequestSerializer())
+        .addDeserializer(ReserveRangeRequest.class, new ReserveRangeRequestDeserializer())
+        .addSerializer(ReserveRangeResponse.class, new ReserveRangeResponseSerializer())
+        .addDeserializer(ReserveRangeResponse.class, new ReserveRangeResponseDeserializer())
         .addSerializer(PlanTableScanResponse.class, new PlanTableScanResponseSerializer<>())
         .addDeserializer(PlanTableScanResponse.class, new PlanTableScanResponseDeserializer<>())
         .addSerializer(
@@ -181,6 +189,40 @@ public class RESTSerializers {
         .addDeserializer(ImmutableRemoteSignResponse.class, new RemoteSignResponseDeserializer<>());
 
     mapper.registerModule(module);
+  }
+
+  static class ReserveRangeRequestSerializer extends JsonSerializer<ReserveRangeRequest> {
+    @Override
+    public void serialize(
+        ReserveRangeRequest value, JsonGenerator gen, SerializerProvider serializers)
+        throws IOException {
+      ReserveRangeRequestParser.toJson(value, gen);
+    }
+  }
+
+  static class ReserveRangeRequestDeserializer extends JsonDeserializer<ReserveRangeRequest> {
+    @Override
+    public ReserveRangeRequest deserialize(JsonParser parser, DeserializationContext context)
+        throws IOException {
+      return ReserveRangeRequestParser.fromJson(parser.getCodec().readTree(parser));
+    }
+  }
+
+  static class ReserveRangeResponseSerializer extends JsonSerializer<ReserveRangeResponse> {
+    @Override
+    public void serialize(
+        ReserveRangeResponse value, JsonGenerator gen, SerializerProvider serializers)
+        throws IOException {
+      ReserveRangeResponseParser.toJson(value, gen);
+    }
+  }
+
+  static class ReserveRangeResponseDeserializer extends JsonDeserializer<ReserveRangeResponse> {
+    @Override
+    public ReserveRangeResponse deserialize(JsonParser parser, DeserializationContext context)
+        throws IOException {
+      return ReserveRangeResponseParser.fromJson(parser.getCodec().readTree(parser));
+    }
   }
 
   static class UpdateReqDeserializer

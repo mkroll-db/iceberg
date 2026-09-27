@@ -20,6 +20,7 @@ package org.apache.spark.sql.execution.datasources.v2
 
 import org.apache.iceberg.spark.Spark3Util
 import org.apache.iceberg.spark.source.SparkTable
+import org.apache.iceberg.spark.source.SequenceColumns
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.Attribute
 import org.apache.spark.sql.connector.catalog.Identifier
@@ -39,9 +40,11 @@ case class AddPartitionFieldExec(
   override protected def run(): Seq[InternalRow] = {
     catalog.loadTable(ident) match {
       case iceberg: SparkTable =>
+        val term = Spark3Util.toIcebergTerm(transform)
+        SequenceColumns.validateNoSequenceField(iceberg.table.schema(), term, "partitioned")
         iceberg.table
           .updateSpec()
-          .addField(name.orNull, Spark3Util.toIcebergTerm(transform))
+          .addField(name.orNull, term)
           .commit()
 
       case table =>

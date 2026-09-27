@@ -81,6 +81,10 @@ class SparkPositionDeltaWriteBuilder implements DeltaWriteBuilder {
 
   @Override
   public DeltaWrite build() {
+    Preconditions.checkArgument(
+        table.schema().columns().stream()
+            .noneMatch(field -> field.writeDefaultExpression() != null),
+        "Row-level operations with per-record defaults are not supported by the prototype");
     Schema dataSchema = dataSchema();
 
     validateRowIdSchema();

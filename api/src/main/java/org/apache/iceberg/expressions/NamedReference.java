@@ -57,4 +57,14 @@ public class NamedReference<T> implements UnboundTerm<T>, Reference<T> {
   public String toString() {
     return String.format("ref(name=\"%s\")", name);
   }
+
+  @Override
+  public boolean equals(Object other) {
+    return other instanceof NamedReference && name.equals(((NamedReference<?>) other).name);
+  }
+
+  @Override
+  public int hashCode() {
+    return name.hashCode();
+  }
 }

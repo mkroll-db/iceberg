@@ -19,6 +19,7 @@
 package org.apache.iceberg.expressions;
 
 import java.util.List;
+import java.util.Objects;
 import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.types.Types;
@@ -91,5 +92,19 @@ public class UnboundApply<T> implements UnboundTerm<T> {
   @Override
   public String toString() {
     return function + "(" + arguments + ")";
+  }
+
+  @Override
+  public boolean equals(Object other) {
+    if (!(other instanceof UnboundApply)) {
+      return false;
+    }
+    UnboundApply<?> that = (UnboundApply<?>) other;
+    return function.equals(that.function) && arguments.equals(that.arguments);
+  }
+
+  @Override
+  public int hashCode() {
+    return Objects.hash(function, arguments);
   }
 }

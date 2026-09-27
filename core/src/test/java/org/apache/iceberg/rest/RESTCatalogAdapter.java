@@ -25,7 +25,10 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.stream.Collectors;
 import org.apache.http.HttpHeaders;
@@ -73,12 +76,14 @@ import org.apache.iceberg.rest.requests.RegisterTableRequest;
 import org.apache.iceberg.rest.requests.RegisterViewRequest;
 import org.apache.iceberg.rest.requests.RenameTableRequest;
 import org.apache.iceberg.rest.requests.ReportMetricsRequest;
+import org.apache.iceberg.rest.requests.ReserveRangeRequest;
 import org.apache.iceberg.rest.requests.UpdateNamespacePropertiesRequest;
 import org.apache.iceberg.rest.requests.UpdateTableRequest;
 import org.apache.iceberg.rest.responses.ConfigResponse;
 import org.apache.iceberg.rest.responses.ErrorResponse;
 import org.apache.iceberg.rest.responses.LoadTableResponse;
 import org.apache.iceberg.rest.responses.OAuthTokenResponse;
+import org.apache.iceberg.rest.responses.ReserveRangeResponse;
 import org.apache.iceberg.util.Pair;
 import org.apache.iceberg.util.PropertyUtil;
 
@@ -114,6 +119,45 @@ public class RESTCatalogAdapter extends BaseHTTPClient {
   private final Catalog catalog;
   private final SupportsNamespaces asNamespaceCatalog;
   private final ViewCatalog asViewCatalog;
+  // ponytail: these counters reset when the test server restarts. Use durable catalog storage
+  // before relying on this endpoint outside the prototype.
+  private final Map<SequenceKey, Counter> counters = new ConcurrentHashMap<>();
+
+  private static class SequenceKey {
+    private final String tableUuid;
+    private final String sequenceId;
+
+    private SequenceKey(String tableUuid, String sequenceId) {
+      this.tableUuid = tableUuid;
+      this.sequenceId = sequenceId;
+    }
+
+    @Override
+    public boolean equals(Object other) {
+      if (!(other instanceof SequenceKey)) {
+        return false;
+      }
+      SequenceKey that = (SequenceKey) other;
+      return tableUuid.equals(that.tableUuid) && sequenceId.equals(that.sequenceId);
+    }
+
+    @Override
+    public int hashCode() {
+      return Objects.hash(tableUuid, sequenceId);
+    }
+  }
+
+  private static class Counter {
+    private final long start;
+    private final long step;
+    private final Long hwm;
+
+    private Counter(long start, long step, Long hwm) {
+      this.start = start;
+      this.step = step;
+      this.hwm = hwm;
+    }
+  }
 
   private AuthSession authSession = AuthSession.EMPTY;
   private PlanningBehavior planningBehavior;
@@ -333,6 +377,45 @@ public class RESTCatalogAdapter extends BaseHTTPClient {
           responseHeaders.accept(ImmutableMap.of(HttpHeaders.ETAG, eTag));
 
           return castResponse(responseType, response);
+        }
+
+      case RESERVE_SEQUENCE_RANGE:
+        {
+          TableIdentifier ident = tableIdentFromPathVars(vars);
+          ReserveRangeRequest request = castRequest(ReserveRangeRequest.class, body);
+          request.validate();
+          String tableUuid = catalog.loadTable(ident).uuid().toString();
+          String sequenceId = RESTUtil.decodePathSegment(vars.get("sequence-id"));
+          // ponytail: the table UUID in this key scopes every reservation to the loaded table.
+          // If the key ever loses it, a stored table UUID check must replace it.
+          SequenceKey key = new SequenceKey(tableUuid, sequenceId);
+          AtomicReference<ReserveRangeResponse> reserved = new AtomicReference<>();
+          counters.compute(
+              key,
+              (ignored, current) -> {
+                Counter counter =
+                    current == null ? new Counter(request.start(), request.step(), null) : current;
+                if (counter.start != request.start() || counter.step != request.step()) {
+                  throw new IllegalArgumentException(
+                      "INVALID_PARAMETER_VALUE: sequence start or step changed");
+                }
+                try {
+                  long rangeStart =
+                      counter.hwm == null
+                          ? counter.start
+                          : Math.addExact(counter.hwm, counter.step);
+                  long rangeEnd =
+                      Math.addExact(
+                          rangeStart, Math.multiplyExact(counter.step, request.count() - 1L));
+                  reserved.set(
+                      new ReserveRangeResponse(sequenceId, rangeStart, rangeEnd, counter.step));
+                  return new Counter(counter.start, counter.step, rangeEnd);
+                } catch (ArithmeticException e) {
+                  throw new IllegalArgumentException(
+                      "INVALID_PARAMETER_VALUE: sequence exhausted", e);
+                }
+              });
+          return castResponse(responseType, reserved.get());
         }
 
       case PLAN_TABLE_SCAN:
@@ -717,7 +800,12 @@ public class RESTCatalogAdapter extends BaseHTTPClient {
       Exception exc, ErrorResponse.Builder errorBuilder) {
     errorBuilder
         .responseCode(EXCEPTION_ERROR_CODES.getOrDefault(exc.getClass(), 500))
-        .withType(exc.getClass().getSimpleName())
+        .withType(
+            exc instanceof IllegalArgumentException
+                    && exc.getMessage() != null
+                    && exc.getMessage().startsWith("INVALID_PARAMETER_VALUE:")
+                ? "INVALID_PARAMETER_VALUE"
+                : exc.getClass().getSimpleName())
         .withMessage(exc.getMessage())
         .withStackTrace(exc);
   }

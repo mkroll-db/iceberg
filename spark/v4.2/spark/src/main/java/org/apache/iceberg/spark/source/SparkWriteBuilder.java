@@ -128,6 +128,11 @@ class SparkWriteBuilder implements WriteBuilder, SupportsDynamicOverwrite, Suppo
 
   @Override
   public Write build() {
+    Preconditions.checkArgument(
+        !(mode instanceof CopyOnWriteOperation)
+            || table.schema().columns().stream()
+                .noneMatch(field -> field.writeDefaultExpression() != null),
+        "Row-level operations with per-record defaults are not supported by the prototype");
     validateRowLineage();
     Schema writeSchema = mergeSchema ? mergeAndValidateWriteSchema() : validateWriteSchema();
     SparkUtil.validatePartitionTransforms(table.spec());
@@ -142,7 +147,8 @@ class SparkWriteBuilder implements WriteBuilder, SupportsDynamicOverwrite, Suppo
         appId,
         writeSchema,
         sparkWriteSchema(),
-        writeRequirements()) {
+        writeRequirements(),
+        false) {
 
       @Override
       public BatchWrite toBatch() {
@@ -190,7 +196,11 @@ class SparkWriteBuilder implements WriteBuilder, SupportsDynamicOverwrite, Suppo
 
   private Schema validateWriteSchema() {
     Schema writeSchema = SparkSchemaUtil.convert(table.schema(), info.schema(), caseSensitive);
-    TypeUtil.validateWriteSchema(table.schema(), writeSchema, checkNullability, checkOrdering);
+    TypeUtil.validateWriteSchema(
+        SequenceColumns.validationSchema(table.schema()),
+        writeSchema,
+        checkNullability,
+        checkOrdering);
     return addRowLineageIfNeeded(writeSchema);
   }
 
@@ -206,7 +216,11 @@ class SparkWriteBuilder implements WriteBuilder, SupportsDynamicOverwrite, Suppo
         table.updateSchema().caseSensitive(caseSensitive).unionByNameWith(newSchema);
     Schema mergedSchema = update.apply();
     Schema writeSchema = SparkSchemaUtil.convert(mergedSchema, info.schema(), caseSensitive);
-    TypeUtil.validateWriteSchema(mergedSchema, writeSchema, checkNullability, checkOrdering);
+    TypeUtil.validateWriteSchema(
+        SequenceColumns.validationSchema(mergedSchema),
+        writeSchema,
+        checkNullability,
+        checkOrdering);
     update.commit();
     return addRowLineageIfNeeded(writeSchema);
   }

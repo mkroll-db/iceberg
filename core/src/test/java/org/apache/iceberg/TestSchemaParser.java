@@ -21,15 +21,18 @@ package org.apache.iceberg;
 import static org.apache.iceberg.types.Types.NestedField.optional;
 import static org.apache.iceberg.types.Types.NestedField.required;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.io.IOException;
 import java.math.BigDecimal;
 import java.nio.ByteBuffer;
+import java.util.List;
 import java.util.UUID;
 import java.util.stream.Stream;
 import org.apache.iceberg.data.DataTestBase;
 import org.apache.iceberg.expressions.Expressions;
 import org.apache.iceberg.expressions.Literal;
+import org.apache.iceberg.expressions.UnboundApply;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.relocated.com.google.common.collect.Sets;
 import org.apache.iceberg.types.Type;
@@ -41,6 +44,56 @@ import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
 
 public class TestSchemaParser extends DataTestBase {
+  @Test
+  public void testWriteDefaultExpressionRoundTrip() {
+    UnboundApply<Long> expression =
+        Expressions.apply(
+            Expressions.function("next_value_for"),
+            List.<Object>of("6bcb5a17-18e5-4931-843b-b73cb1ce871c", 1, 1));
+    Schema schema =
+        new Schema(
+            Types.NestedField.required("id")
+                .withId(1)
+                .ofType(Types.LongType.get())
+                .withWriteDefaultExpression(expression)
+                .build());
+
+    String json = SchemaParser.toJson(schema);
+    assertThat(json)
+        .contains(
+            "\"write-default\":{\"type\":\"apply\",\"function\":\"next_value_for\","
+                + "\"arguments\":[\"6bcb5a17-18e5-4931-843b-b73cb1ce871c\",1,1]}");
+    assertThat(SchemaParser.fromJson(json).asStruct()).isEqualTo(schema.asStruct());
+    Types.NestedField copied = schema.findField("id").asOptional().asRequired().withFieldId(5);
+    assertThat(copied.writeDefaultExpression()).isEqualTo(expression);
+  }
+
+  @Test
+  public void testCannotSetBothWriteDefaults() {
+    assertThatThrownBy(
+            () ->
+                Types.NestedField.required("id")
+                    .withId(1)
+                    .ofType(Types.LongType.get())
+                    .withWriteDefault(Literal.of(1L))
+                    .withWriteDefaultExpression(
+                        Expressions.apply(Expressions.function("next_value_for"), List.of()))
+                    .build())
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("both write default");
+  }
+
+  @Test
+  public void testInvalidObjectWriteDefaultNamesField() {
+    assertThatThrownBy(
+            () ->
+                SchemaParser.fromJson(
+                    "{\"type\":\"struct\",\"fields\":[{\"id\":1,\"name\":\"id\","
+                        + "\"required\":true,\"type\":\"long\",\"write-default\":{\"foo\":1}}]}"))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("field id");
+  }
+
   @Override
   protected boolean supportsUnknown() {
     return true;
@@ -154,5 +207,6 @@ public class TestSchemaParser extends DataTestBase {
         .isEqualTo(defaultValue.value());
     assertThat(serialized.findField("col_with_default").writeDefault())
         .isEqualTo(defaultValue.value());
+    assertThat(SchemaParser.toJson(serialized)).isEqualTo(SchemaParser.toJson(schema));
   }
 }

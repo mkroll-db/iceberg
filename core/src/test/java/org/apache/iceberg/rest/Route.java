@@ -32,6 +32,7 @@ import org.apache.iceberg.rest.requests.RegisterTableRequest;
 import org.apache.iceberg.rest.requests.RegisterViewRequest;
 import org.apache.iceberg.rest.requests.RenameTableRequest;
 import org.apache.iceberg.rest.requests.ReportMetricsRequest;
+import org.apache.iceberg.rest.requests.ReserveRangeRequest;
 import org.apache.iceberg.rest.requests.UpdateNamespacePropertiesRequest;
 import org.apache.iceberg.rest.requests.UpdateTableRequest;
 import org.apache.iceberg.rest.responses.ConfigResponse;
@@ -45,6 +46,7 @@ import org.apache.iceberg.rest.responses.LoadTableResponse;
 import org.apache.iceberg.rest.responses.LoadViewResponse;
 import org.apache.iceberg.rest.responses.OAuthTokenResponse;
 import org.apache.iceberg.rest.responses.PlanTableScanResponse;
+import org.apache.iceberg.rest.responses.ReserveRangeResponse;
 import org.apache.iceberg.rest.responses.UpdateNamespacePropertiesResponse;
 import org.apache.iceberg.util.Pair;
 
@@ -77,6 +79,11 @@ enum Route {
       LoadTableResponse.class),
   TABLE_EXISTS(HTTPRequest.HTTPMethod.HEAD, ResourcePaths.V1_TABLE),
   LOAD_TABLE(HTTPRequest.HTTPMethod.GET, ResourcePaths.V1_TABLE, null, LoadTableResponse.class),
+  RESERVE_SEQUENCE_RANGE(
+      HTTPRequest.HTTPMethod.POST,
+      ResourcePaths.V1_TABLE_SEQUENCE_RESERVE,
+      ReserveRangeRequest.class,
+      ReserveRangeResponse.class),
   REGISTER_TABLE(
       HTTPRequest.HTTPMethod.POST,
       ResourcePaths.V1_TABLE_REGISTER,
