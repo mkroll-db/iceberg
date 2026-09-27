@@ -107,6 +107,7 @@ project(":iceberg-spark:iceberg-spark-${sparkMajorVersion}_${scalaVersion}") {
     testImplementation project(path: ':iceberg-data', configuration: 'testArtifacts')
     testImplementation project(path: ':iceberg-orc', configuration: 'testArtifacts')
     testImplementation (project(path: ':iceberg-open-api', configuration: 'testFixturesRuntimeElements'))
+    testRuntimeOnly project(":iceberg-spark:iceberg-spark-extensions-${sparkMajorVersion}_${scalaVersion}")
     testImplementation libs.awaitility
     testImplementation(testFixtures(project(':iceberg-parquet')))
   }
@@ -118,6 +119,19 @@ project(":iceberg-spark:iceberg-spark-${sparkMajorVersion}_${scalaVersion}") {
   tasks.withType(Test) {
     // Vectorized reads need more memory
     maxHeapSize '3160m'
+  }
+
+  tasks.register('sequenceDemo', JavaExec) {
+    group = 'verification'
+    description = 'Run the interactive per-record default demo'
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'org.apache.iceberg.rest.SequenceDemo'
+    standardInput = System.in
+    maxHeapSize = '3160m'
+    jvmArgs += project.property('extraJvmArgs')
+    systemProperty 'org.slf4j.simpleLogger.defaultLogLevel', 'off'
+    systemProperty 'slf4j.provider', 'org.slf4j.simple.SimpleServiceProvider'
   }
 }
 

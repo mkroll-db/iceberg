@@ -43,6 +43,7 @@ public class RESTCatalogServer {
 
   public static final String REST_PORT = "rest.port";
   static final int REST_PORT_DEFAULT = 8181;
+  public static final String REST_HOST = "rest.host";
 
   public static final String CATALOG_NAME = "catalog.name";
   static final String CATALOG_NAME_DEFAULT = "rest_backend";
@@ -125,7 +126,11 @@ public class RESTCatalogServer {
             PropertyUtil.propertyAsInt(catalogContext.configuration, REST_PORT, REST_PORT_DEFAULT));
     httpServer.setHandler(context);
     for (Connector connector : httpServer.getConnectors()) {
-      ((ServerConnector) connector).setReusePort(true);
+      ServerConnector serverConnector = (ServerConnector) connector;
+      serverConnector.setReusePort(true);
+      if (catalogContext.configuration.containsKey(REST_HOST)) {
+        serverConnector.setHost(catalogContext.configuration.get(REST_HOST));
+      }
     }
     httpServer.start();
 
